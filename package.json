@@ -1,0 +1,21 @@
+{
+  "name": "stock-bot",
+  "version": "1.0.0",
+  "description": "US Stock Telegram Bot with RSI, alerts, and KRW conversion",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": ["telegram", "bot", "stock", "finance"],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "node-telegram-bot-api": "^0.67.0",
+    "yahoo-finance2": "^3.11.2"
+  }
+}
