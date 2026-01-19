@@ -197,6 +197,21 @@ const koreanToTicker = {
   '넷이즈': 'NTES', '빌리빌리': 'BILI', '트립닷컴': 'TCOM',
 };
 
+// 티커 변환 함수 (소문자 입력도 지원)
+function resolveTicker(stockName) {
+  // 1. 그대로 매핑에서 찾기 (한글명 등)
+  if (koreanToTicker[stockName]) {
+    return koreanToTicker[stockName];
+  }
+  // 2. 대문자로 변환 후 매핑에서 찾기 (amd -> AMD -> 'AMD')
+  const upper = stockName.toUpperCase();
+  if (koreanToTicker[upper]) {
+    return koreanToTicker[upper];
+  }
+  // 3. 그냥 대문자로 반환 (직접 티커 입력)
+  return upper;
+}
+
 // 관심종목 저장 (chatId별)
 const watchlist = {};
 
@@ -462,7 +477,7 @@ function showAlerts(chatId) {
 
 // 관심종목 추가 함수
 async function addToWatchlist(chatId, stockName) {
-  const ticker = koreanToTicker[stockName] || stockName.toUpperCase();
+  const ticker = resolveTicker(stockName);
 
   try {
     const quote = await yahooFinance.quote(ticker);
@@ -487,7 +502,7 @@ async function addToWatchlist(chatId, stockName) {
 
 // 관심종목 삭제 함수
 function delFromWatchlist(chatId, stockName) {
-  const ticker = koreanToTicker[stockName] || stockName.toUpperCase();
+  const ticker = resolveTicker(stockName);
 
   if (!watchlist[chatId] || !watchlist[chatId].includes(ticker)) {
     bot.sendMessage(chatId, `⚠️ ${ticker}은 관심종목에 없습니다.`);
@@ -500,7 +515,7 @@ function delFromWatchlist(chatId, stockName) {
 
 // 알림 설정 함수
 async function setAlert(chatId, stockName, targetPrice) {
-  const ticker = koreanToTicker[stockName] || stockName.toUpperCase();
+  const ticker = resolveTicker(stockName);
 
   try {
     const quote = await yahooFinance.quote(ticker);
@@ -537,7 +552,7 @@ function delAlert(chatId, index) {
 
 // 주가 조회 함수 (종합 분석 리포트)
 async function getQuote(chatId, stockName) {
-  const ticker = koreanToTicker[stockName] || stockName.toUpperCase();
+  const ticker = resolveTicker(stockName);
 
   try {
     // 병렬로 데이터 가져오기
