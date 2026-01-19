@@ -350,10 +350,11 @@ function parseIntent(text) {
     return { type: 'delAlert', index: parseInt(delAlertMatch[1]) - 1 };
   }
 
-  // 목표가 알림: "테슬라 400 알려줘", "TSLA 400되면 알림", "애플 200 이상"
+  // 목표가 알림: "테슬라 400 알려줘", "TSLA 400되면 알림", "애플 200 이상", "SOXL 30 alert"
   const alertPatterns = [
     /^(.+?)\s+(\d+\.?\d*)\s*(?:되면|도달하면|넘으면|내려가면|떨어지면)?\s*(?:알려줘|알림|알려|노티|알려줘요)/,
     /^(.+?)\s+(\d+\.?\d*)\s*(?:이상|이하|도달|돌파)/,
+    /^([A-Za-z][A-Za-z0-9\-\.]*)\s+(\d+\.?\d*)\s*(?:alert|알림)?$/i,  // "SOXL 30", "soxl 30 alert"
   ];
   for (const pattern of alertPatterns) {
     const match = text.match(pattern);
