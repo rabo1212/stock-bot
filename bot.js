@@ -414,8 +414,9 @@ bot.onText(/\/start/, (msg) => {
   bot.sendMessage(msg.chat.id, `미국 주식 봇입니다.
 
 📌 종목 분석
-종목명 입력 (예: 애플, TSLA)
+종목명 입력 (예: 애플, TSLA, aapl)
 → 현재가, RSI, 52주 고저, 배당 등
+💡 모든 미국 티커 조회 가능 (NAK, SOXL 등)
 
 📌 관심종목
 "관심종목" - 목록 보기
