@@ -218,6 +218,9 @@ const watchlist = {};
 // 목표가 알림 저장 (chatId별)
 const alerts = {};
 
+// 환율 알림 저장 (chatId별)
+const exchangeAlerts = {};
+
 // 환율 캐시 (5분마다 갱신)
 let exchangeRateCache = { rate: 1450, lastUpdated: 0 };
 
@@ -350,6 +353,27 @@ function parseIntent(text) {
     return { type: 'delAlert', index: parseInt(delAlertMatch[1]) - 1 };
   }
 
+  // 환율 조회: "환율", "달러", "원달러"
+  if (/^(환율|달러|원달러|달러환율|USD|usd)$/.test(text)) {
+    return { type: 'showExchangeRate' };
+  }
+
+  // 환율 알림: "1400원 되면 알려줘", "환율 1400 알려줘", "1350원 알림"
+  const exchangeAlertPatterns = [
+    /^(\d+\.?\d*)\s*원?\s*(?:되면|도달하면|넘으면|내려가면|떨어지면)?\s*(?:알려줘|알림|알려|노티)/,
+    /^환율\s*(\d+\.?\d*)\s*(?:되면|도달하면)?\s*(?:알려줘|알림|알려)?/,
+    /^(\d+\.?\d*)\s*원\s*(?:이상|이하|도달|돌파)/,
+  ];
+  for (const pattern of exchangeAlertPatterns) {
+    const match = text.match(pattern);
+    if (match) {
+      const targetRate = parseFloat(match[1]);
+      if (targetRate > 0) {
+        return { type: 'setExchangeAlert', targetRate };
+      }
+    }
+  }
+
   // 목표가 알림: "테슬라 400 알려줘", "TSLA 400되면 알림", "애플 200 이상", "SOXL 30 alert"
   const alertPatterns = [
     /^(.+?)\s+(\d+\.?\d*)\s*(?:되면|도달하면|넘으면|내려가면|떨어지면)?\s*(?:알려줘|알림|알려|노티|알려줘요)/,
@@ -405,8 +429,39 @@ async function checkAlerts() {
   }
 }
 
+// 환율 알림 체크 함수
+async function checkExchangeAlerts() {
+  const currentRate = await getExchangeRate();
+  if (!currentRate) return;
+
+  for (const chatId of Object.keys(exchangeAlerts)) {
+    const userAlerts = exchangeAlerts[chatId];
+    if (!userAlerts || userAlerts.length === 0) continue;
+
+    for (let i = userAlerts.length - 1; i >= 0; i--) {
+      const alert = userAlerts[i];
+      let triggered = false;
+
+      if (alert.direction === 'above' && currentRate >= alert.targetRate) {
+        triggered = true;
+      } else if (alert.direction === 'below' && currentRate <= alert.targetRate) {
+        triggered = true;
+      }
+
+      if (triggered) {
+        const dirText = alert.direction === 'above' ? '이상' : '이하';
+        bot.sendMessage(chatId, `🔔 목표 환율 도달!\n\n💱 현재 환율: ₩${formatNumber(Math.round(currentRate))}\n🎯 목표 환율: ₩${formatNumber(alert.targetRate)} ${dirText}`);
+        userAlerts.splice(i, 1);
+      }
+    }
+  }
+}
+
 // 1분마다 알림 체크
-setInterval(checkAlerts, 60000);
+setInterval(() => {
+  checkAlerts();
+  checkExchangeAlerts();
+}, 60000);
 
 console.log('Stock Bot is running...');
 
@@ -427,7 +482,11 @@ bot.onText(/\/start/, (msg) => {
 📌 목표가 알림
 "테슬라 400 알려줘" - 알림 설정
 "알림 목록" - 설정된 알림 보기
-"1번 삭제" - 알림 삭제`);
+"1번 삭제" - 알림 삭제
+
+📌 환율
+"환율" - 현재 달러/원 환율
+"1400원 알려줘" - 목표 환율 알림`);
 });
 
 // 관심종목 보기 함수
@@ -513,6 +572,57 @@ function delFromWatchlist(chatId, stockName) {
 
   watchlist[chatId] = watchlist[chatId].filter(t => t !== ticker);
   bot.sendMessage(chatId, `🗑️ ${ticker} 관심종목에서 삭제했습니다.`);
+}
+
+// 환율 조회 함수
+async function showExchangeRate(chatId) {
+  try {
+    const quote = await yahooFinance.quote('USDKRW=X');
+    const rate = quote?.regularMarketPrice;
+    const change = quote?.regularMarketChange || 0;
+    const changePercent = quote?.regularMarketChangePercent || 0;
+
+    if (!rate) {
+      bot.sendMessage(chatId, '❌ 환율 정보를 가져올 수 없습니다.');
+      return;
+    }
+
+    const arrow = change >= 0 ? '🔺' : '🔻';
+    const sign = change >= 0 ? '+' : '';
+
+    const message = `💱 USD/KRW 환율
+━━━━━━━━━━━━━━━
+₩${formatNumber(Math.round(rate))}
+
+${arrow} ${sign}${change.toFixed(2)} (${sign}${changePercent.toFixed(2)}%)
+━━━━━━━━━━━━━━━
+💡 "1400원 알려줘" - 목표 환율 알림`;
+
+    bot.sendMessage(chatId, message);
+  } catch (error) {
+    bot.sendMessage(chatId, '❌ 환율 정보를 가져올 수 없습니다.');
+  }
+}
+
+// 환율 알림 설정 함수
+async function setExchangeAlert(chatId, targetRate) {
+  try {
+    const currentRate = await getExchangeRate();
+    if (!currentRate) {
+      bot.sendMessage(chatId, '❌ 환율 정보를 가져올 수 없습니다.');
+      return;
+    }
+
+    const direction = targetRate >= currentRate ? 'above' : 'below';
+    const dirText = direction === 'above' ? '이상' : '이하';
+
+    if (!exchangeAlerts[chatId]) exchangeAlerts[chatId] = [];
+    exchangeAlerts[chatId].push({ targetRate, direction });
+
+    bot.sendMessage(chatId, `🔔 환율 알림 설정 완료!\n\n💱 현재 환율: ₩${formatNumber(Math.round(currentRate))}\n🎯 목표 환율: ₩${formatNumber(targetRate)} ${dirText}\n\n목표 환율 도달 시 알림을 보내드립니다.`);
+  } catch (error) {
+    bot.sendMessage(chatId, '❌ 환율 알림 설정 실패');
+  }
 }
 
 // 알림 설정 함수
@@ -663,6 +773,12 @@ bot.on('message', async (msg) => {
       break;
     case 'delAlert':
       delAlert(chatId, intent.index);
+      break;
+    case 'showExchangeRate':
+      await showExchangeRate(chatId);
+      break;
+    case 'setExchangeAlert':
+      await setExchangeAlert(chatId, intent.targetRate);
       break;
     case 'getQuote':
       await getQuote(chatId, intent.stockName);
