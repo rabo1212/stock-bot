@@ -222,6 +222,9 @@ const alerts = {};
 // 환율 알림 저장 (chatId별)
 const exchangeAlerts = {};
 
+// 일정 알림 저장 (chatId별)
+const schedules = {};
+
 // 환율 캐시 (5분마다 갱신)
 let exchangeRateCache = { rate: 1450, lastUpdated: 0 };
 
@@ -489,11 +492,17 @@ bot.onText(/\/start/, (msg) => {
 "환율" - 현재 달러/원 환율
 "1400원 알려줘" - 목표 환율 알림
 
-📰 뉴스 브리핑 (NEW!)
+📰 뉴스 브리핑
 "뉴스" - 오늘의 브리핑 보기
 "디자인" - 디자인 브리핑 보기
 ⏰ 매일 오전 7시 자동 브리핑
-⏰ 격일 오전 7시 10분 디자인 브리핑`);
+
+📅 일정 알림 (NEW!)
+"일정 금요일 19시 회의" - 일정 등록
+"매주 금요일 7시 회의" - 반복 일정
+"일정" - 일정 목록 보기
+"일정 1번 삭제" - 삭제
+⏰ 10분 전에 자동 알림!`);
 });
 
 // 관심종목 보기 함수
@@ -1026,6 +1035,198 @@ cron.schedule('10 22 * * *', () => {
 
 console.log('News briefing scheduler started.');
 
+// ===== 일정 알림 기능 =====
+
+// 요일 파싱
+function parseDay(text) {
+  const days = {
+    '일요일': 0, '일': 0,
+    '월요일': 1, '월': 1,
+    '화요일': 2, '화': 2,
+    '수요일': 3, '수': 3,
+    '목요일': 4, '목': 4,
+    '금요일': 5, '금': 5,
+    '토요일': 6, '토': 6,
+  };
+  return days[text];
+}
+
+// 다음 해당 요일 날짜 계산
+function getNextDayDate(dayOfWeek) {
+  const now = new Date();
+  const today = now.getDay();
+  let daysUntil = dayOfWeek - today;
+  if (daysUntil <= 0) daysUntil += 7;
+  const nextDate = new Date(now);
+  nextDate.setDate(now.getDate() + daysUntil);
+  return nextDate;
+}
+
+// 일정 파싱 함수
+function parseSchedule(text) {
+  // 패턴들: "금요일 7시 회의", "매주 금요일 19:00 팀미팅", "내일 14시 약속"
+
+  // 반복 일정: "매주 금요일 7시 회의"
+  const repeatMatch = text.match(/매주\s*(월|화|수|목|금|토|일)요?일?\s*(\d{1,2})[:시]?\s*(\d{0,2})분?\s*(.+)/);
+  if (repeatMatch) {
+    const dayOfWeek = parseDay(repeatMatch[1]);
+    const hour = parseInt(repeatMatch[2]);
+    const minute = parseInt(repeatMatch[3]) || 0;
+    const title = repeatMatch[4].trim();
+    return { type: 'repeat', dayOfWeek, hour, minute, title };
+  }
+
+  // 일회성: "금요일 7시 회의" 또는 "금요일 19:00 회의"
+  const onceMatch = text.match(/(월|화|수|목|금|토|일)요?일?\s*(\d{1,2})[:시]?\s*(\d{0,2})분?\s*(.+)/);
+  if (onceMatch) {
+    const dayOfWeek = parseDay(onceMatch[1]);
+    const hour = parseInt(onceMatch[2]);
+    const minute = parseInt(onceMatch[3]) || 0;
+    const title = onceMatch[4].trim();
+    return { type: 'once', dayOfWeek, hour, minute, title };
+  }
+
+  // 오늘/내일: "오늘 7시 회의", "내일 14시 약속"
+  const todayMatch = text.match(/(오늘|내일)\s*(\d{1,2})[:시]?\s*(\d{0,2})분?\s*(.+)/);
+  if (todayMatch) {
+    const isToday = todayMatch[1] === '오늘';
+    const hour = parseInt(todayMatch[2]);
+    const minute = parseInt(todayMatch[3]) || 0;
+    const title = todayMatch[4].trim();
+
+    const date = new Date();
+    if (!isToday) date.setDate(date.getDate() + 1);
+
+    return {
+      type: 'once',
+      dayOfWeek: date.getDay(),
+      hour,
+      minute,
+      title,
+      specificDate: date
+    };
+  }
+
+  return null;
+}
+
+// 일정 추가 함수
+function addSchedule(chatId, scheduleData) {
+  if (!schedules[chatId]) schedules[chatId] = [];
+
+  const now = new Date();
+  let nextAlarm;
+
+  if (scheduleData.specificDate) {
+    nextAlarm = new Date(scheduleData.specificDate);
+    nextAlarm.setHours(scheduleData.hour, scheduleData.minute, 0, 0);
+  } else {
+    nextAlarm = getNextDayDate(scheduleData.dayOfWeek);
+    nextAlarm.setHours(scheduleData.hour, scheduleData.minute, 0, 0);
+
+    // 이미 지난 시간이면 다음 주로
+    if (nextAlarm <= now) {
+      nextAlarm.setDate(nextAlarm.getDate() + 7);
+    }
+  }
+
+  const schedule = {
+    id: Date.now(),
+    title: scheduleData.title,
+    dayOfWeek: scheduleData.dayOfWeek,
+    hour: scheduleData.hour,
+    minute: scheduleData.minute,
+    repeat: scheduleData.type === 'repeat',
+    nextAlarm: nextAlarm.getTime(),
+    notified: false,
+  };
+
+  schedules[chatId].push(schedule);
+  return schedule;
+}
+
+// 일정 목록 보기
+function showSchedules(chatId) {
+  if (!schedules[chatId] || schedules[chatId].length === 0) {
+    return '📅 등록된 일정이 없습니다.\n\n"일정 금요일 19시 회의" 형식으로 추가하세요.';
+  }
+
+  const dayNames = ['일', '월', '화', '수', '목', '금', '토'];
+  let result = '📅 등록된 일정\n━━━━━━━━━━━━━━━\n';
+
+  schedules[chatId].forEach((s, index) => {
+    const repeatIcon = s.repeat ? '🔁' : '📌';
+    const dayName = dayNames[s.dayOfWeek];
+    const time = `${s.hour.toString().padStart(2, '0')}:${s.minute.toString().padStart(2, '0')}`;
+    const nextDate = new Date(s.nextAlarm);
+    const dateStr = `${nextDate.getMonth() + 1}/${nextDate.getDate()}`;
+
+    result += `${index + 1}. ${repeatIcon} ${s.repeat ? '매주 ' : ''}${dayName}요일 ${time}\n`;
+    result += `   "${s.title}"\n`;
+    result += `   다음 알림: ${dateStr}\n\n`;
+  });
+
+  result += '━━━━━━━━━━━━━━━\n삭제: "일정 1번 삭제"';
+  return result;
+}
+
+// 일정 삭제
+function deleteSchedule(chatId, index) {
+  if (!schedules[chatId] || !schedules[chatId][index]) {
+    return '❌ 해당 일정을 찾을 수 없습니다.';
+  }
+
+  const removed = schedules[chatId].splice(index, 1)[0];
+  return `🗑️ "${removed.title}" 일정을 삭제했습니다.`;
+}
+
+// 일정 알림 체크 (매분 실행)
+function checkScheduleAlerts() {
+  const now = new Date();
+  const nowTime = now.getTime();
+
+  for (const chatId of Object.keys(schedules)) {
+    const userSchedules = schedules[chatId];
+    if (!userSchedules || userSchedules.length === 0) continue;
+
+    for (let i = userSchedules.length - 1; i >= 0; i--) {
+      const schedule = userSchedules[i];
+      const alarmTime = schedule.nextAlarm;
+
+      // 10분 전 알림 (9분~10분 전 사이에 알림)
+      const tenMinBefore = alarmTime - 10 * 60 * 1000;
+      const nineMinBefore = alarmTime - 9 * 60 * 1000;
+
+      if (nowTime >= tenMinBefore && nowTime < nineMinBefore && !schedule.notified) {
+        const dayNames = ['일', '월', '화', '수', '목', '금', '토'];
+        const time = `${schedule.hour.toString().padStart(2, '0')}:${schedule.minute.toString().padStart(2, '0')}`;
+
+        bot.sendMessage(chatId, `⏰ 일정 알림!\n\n📌 "${schedule.title}"\n🕐 ${dayNames[schedule.dayOfWeek]}요일 ${time}\n\n⏳ 10분 후 시작됩니다!`);
+        schedule.notified = true;
+      }
+
+      // 일정 시간이 지났으면
+      if (nowTime >= alarmTime) {
+        if (schedule.repeat) {
+          // 반복 일정: 다음 주로 업데이트
+          const nextAlarm = new Date(schedule.nextAlarm);
+          nextAlarm.setDate(nextAlarm.getDate() + 7);
+          schedule.nextAlarm = nextAlarm.getTime();
+          schedule.notified = false;
+        } else {
+          // 일회성 일정: 삭제
+          userSchedules.splice(i, 1);
+        }
+      }
+    }
+  }
+}
+
+// 매분 일정 체크
+setInterval(checkScheduleAlerts, 60000);
+
+console.log('Schedule reminder started.');
+
 // 메시지 핸들러
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
@@ -1045,6 +1246,45 @@ bot.on('message', async (msg) => {
   if (/^(디자인|디자인브리핑|design)$/i.test(input)) {
     await sendDesignBriefing(chatId);
     return;
+  }
+
+  // 일정 관련 명령어 처리
+  // 일정 목록 보기
+  if (/^(일정|일정\s*목록|일정\s*리스트|내\s*일정)$/.test(input)) {
+    bot.sendMessage(chatId, showSchedules(chatId));
+    return;
+  }
+
+  // 일정 삭제: "일정 1번 삭제"
+  const scheduleDelMatch = input.match(/일정\s*(\d+)\s*번?\s*(삭제|취소|제거)/);
+  if (scheduleDelMatch) {
+    const index = parseInt(scheduleDelMatch[1]) - 1;
+    bot.sendMessage(chatId, deleteSchedule(chatId, index));
+    return;
+  }
+
+  // 일정 추가: "일정 금요일 7시 회의" 또는 "금요일 7시 회의 알려줘"
+  const scheduleAddMatch = input.match(/^일정\s+(.+)/) || input.match(/(.+)\s+알려줘$/);
+  if (scheduleAddMatch) {
+    const scheduleText = scheduleAddMatch[1].replace(/알려줘$/, '').trim();
+    const parsed = parseSchedule(scheduleText);
+
+    if (parsed) {
+      const schedule = addSchedule(chatId, parsed);
+      const dayNames = ['일', '월', '화', '수', '목', '금', '토'];
+      const time = `${schedule.hour.toString().padStart(2, '0')}:${schedule.minute.toString().padStart(2, '0')}`;
+      const nextDate = new Date(schedule.nextAlarm);
+      const dateStr = `${nextDate.getMonth() + 1}월 ${nextDate.getDate()}일`;
+
+      let msg = `✅ 일정이 등록되었습니다!\n\n`;
+      msg += `📌 "${schedule.title}"\n`;
+      msg += `🗓️ ${schedule.repeat ? '매주 ' : ''}${dayNames[schedule.dayOfWeek]}요일 ${time}\n`;
+      msg += `⏰ 다음 알림: ${dateStr} ${time} (10분 전)\n`;
+      if (schedule.repeat) msg += `🔁 매주 반복`;
+
+      bot.sendMessage(chatId, msg);
+      return;
+    }
   }
 
   const intent = parseIntent(input);
