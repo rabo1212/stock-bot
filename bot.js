@@ -759,7 +759,7 @@ ${formatNumber(volume)}주
 const briefingSubscribers = new Set();
 
 // 뉴스 API 키 (NewsAPI.org - 무료 플랜)
-const NEWS_API_KEY = process.env.NEWS_API_KEY || '';
+const NEWS_API_KEY = process.env.NEWS_API_KEY || '2477d3aed09448d08d5a131c17d14761';
 
 // 뉴스 가져오기 함수
 async function fetchNews(query, category = null) {
