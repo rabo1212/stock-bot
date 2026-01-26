@@ -1,6 +1,5 @@
 const TelegramBot = require('node-telegram-bot-api');
-const YahooFinance = require('yahoo-finance2').default;
-const yahooFinance = new YahooFinance({ suppressNotices: ['yahooSurvey'] });
+const yahooFinance = require('yahoo-finance2').default;
 const axios = require('axios');
 const cheerio = require('cheerio');
 const schedule = require('node-schedule');
