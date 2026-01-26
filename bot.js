@@ -900,17 +900,25 @@ async function generateNewsBriefing() {
     if (topNews && topNews.length > 0) {
       message += `📰 주요 뉴스 Top 3\n`;
       topNews.slice(0, 3).forEach((article, i) => {
-        message += `${i + 1}. ${article.title?.slice(0, 60) || ''}...\n`;
+        const title = article.title || '';
+        const source = article.source?.name || '';
+        const url = article.url || '';
+        message += `${i + 1}. ${title}\n`;
+        if (source) message += `   📍 ${source}\n`;
+        if (url) message += `   🔗 ${url}\n`;
+        message += `\n`;
       });
-      message += `\n`;
     }
 
     // AI/테크 소식
     const techNews = await fetchNews('AI 인공지능 기술');
     if (techNews && techNews.length > 0) {
       message += `🤖 AI/테크 소식\n`;
-      techNews.slice(0, 2).forEach((article, i) => {
-        message += `• ${article.title?.slice(0, 50) || ''}...\n`;
+      techNews.slice(0, 2).forEach((article) => {
+        const title = article.title || '';
+        const url = article.url || '';
+        message += `• ${title}\n`;
+        if (url) message += `  🔗 ${url}\n`;
       });
       message += `\n`;
     }
@@ -919,8 +927,11 @@ async function generateNewsBriefing() {
     const realEstateNews = await fetchNews('부동산 아파트 주택');
     if (realEstateNews && realEstateNews.length > 0) {
       message += `🏠 부동산 뉴스\n`;
-      realEstateNews.slice(0, 2).forEach((article, i) => {
-        message += `• ${article.title?.slice(0, 50) || ''}...\n`;
+      realEstateNews.slice(0, 2).forEach((article) => {
+        const title = article.title || '';
+        const url = article.url || '';
+        message += `• ${title}\n`;
+        if (url) message += `  🔗 ${url}\n`;
       });
       message += `\n`;
     }
@@ -929,8 +940,11 @@ async function generateNewsBriefing() {
     const photoNews = await fetchNews('사진 카메라 촬영');
     if (photoNews && photoNews.length > 0) {
       message += `📸 포토그래퍼 소식\n`;
-      photoNews.slice(0, 2).forEach((article, i) => {
-        message += `• ${article.title?.slice(0, 50) || ''}...\n`;
+      photoNews.slice(0, 2).forEach((article) => {
+        const title = article.title || '';
+        const url = article.url || '';
+        message += `• ${title}\n`;
+        if (url) message += `  🔗 ${url}\n`;
       });
       message += `\n`;
     }
@@ -957,9 +971,12 @@ async function generateDesignBriefing() {
     if (designNews && designNews.length > 0) {
       message += `🎨 핫한 디자인 소식\n`;
       designNews.slice(0, 3).forEach((article, i) => {
-        message += `${i + 1}. ${article.title?.slice(0, 55) || ''}...\n`;
+        const title = article.title || '';
+        const url = article.url || '';
+        message += `${i + 1}. ${title}\n`;
+        if (url) message += `   🔗 ${url}\n`;
+        message += `\n`;
       });
-      message += `\n`;
     }
   }
 
