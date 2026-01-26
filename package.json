@@ -1,7 +1,7 @@
 {
-  "name": "stock-bot-with-news",
-  "version": "2.0.0",
-  "description": "미국 주식 + 뉴스 브리핑 텔레그램 봇",
+  "name": "stock-bot",
+  "version": "1.0.0",
+  "description": "Stock Bot",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
