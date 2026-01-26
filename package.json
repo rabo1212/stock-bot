@@ -1,21 +1,16 @@
 {
-  "name": "stock-bot",
-  "version": "1.0.0",
-  "description": "US Stock Telegram Bot with RSI, alerts, and KRW conversion",
+  "name": "stock-bot-with-news",
+  "version": "2.0.0",
+  "description": "미국 주식 + 뉴스 브리핑 텔레그램 봇",
   "main": "bot.js",
   "scripts": {
-    "start": "node bot.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "keywords": ["telegram", "bot", "stock", "finance"],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
-  "engines": {
-    "node": ">=18.0.0"
+    "start": "node bot.js"
   },
   "dependencies": {
-    "node-telegram-bot-api": "^0.67.0",
-    "yahoo-finance2": "^3.11.2"
+    "node-telegram-bot-api": "^0.64.0",
+    "yahoo-finance2": "^2.11.3",
+    "axios": "^1.6.0",
+    "cheerio": "^1.0.0-rc.12",
+    "node-schedule": "^2.1.1"
   }
 }
