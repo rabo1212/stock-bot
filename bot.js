@@ -761,19 +761,22 @@ const briefingSubscribers = new Set();
 // 뉴스 API 키 (NewsAPI.org - 무료 플랜)
 const NEWS_API_KEY = process.env.NEWS_API_KEY || '2477d3aed09448d08d5a131c17d14761';
 
-// 뉴스 가져오기 함수
+// 뉴스 가져오기 함수 (한국어)
 async function fetchNews(query, category = null) {
   try {
     if (!NEWS_API_KEY) {
       return null;
     }
 
-    let url = `https://newsapi.org/v2/top-headlines?country=us&pageSize=3&apiKey=${NEWS_API_KEY}`;
+    let url;
     if (query) {
-      url = `https://newsapi.org/v2/everything?q=${encodeURIComponent(query)}&pageSize=3&sortBy=publishedAt&language=en&apiKey=${NEWS_API_KEY}`;
-    }
-    if (category) {
-      url = `https://newsapi.org/v2/top-headlines?country=us&category=${category}&pageSize=3&apiKey=${NEWS_API_KEY}`;
+      // 한국어 검색어로 뉴스 검색
+      url = `https://newsapi.org/v2/everything?q=${encodeURIComponent(query)}&pageSize=3&sortBy=publishedAt&language=ko&apiKey=${NEWS_API_KEY}`;
+    } else if (category) {
+      // 한국 뉴스 헤드라인
+      url = `https://newsapi.org/v2/top-headlines?country=kr&category=${category}&pageSize=3&apiKey=${NEWS_API_KEY}`;
+    } else {
+      url = `https://newsapi.org/v2/top-headlines?country=kr&pageSize=3&apiKey=${NEWS_API_KEY}`;
     }
 
     const response = await axios.get(url, { timeout: 10000 });
@@ -883,7 +886,7 @@ async function generateNewsBriefing() {
 
   // 뉴스 섹션 (API 키가 있는 경우에만)
   if (NEWS_API_KEY) {
-    // 주요 뉴스
+    // 주요 뉴스 (한국)
     const topNews = await fetchNews(null, 'business');
     if (topNews && topNews.length > 0) {
       message += `📰 주요 뉴스 Top 3\n`;
@@ -894,7 +897,7 @@ async function generateNewsBriefing() {
     }
 
     // AI/테크 소식
-    const techNews = await fetchNews('AI artificial intelligence tech');
+    const techNews = await fetchNews('AI 인공지능 기술');
     if (techNews && techNews.length > 0) {
       message += `🤖 AI/테크 소식\n`;
       techNews.slice(0, 2).forEach((article, i) => {
@@ -904,7 +907,7 @@ async function generateNewsBriefing() {
     }
 
     // 부동산 뉴스
-    const realEstateNews = await fetchNews('real estate housing market');
+    const realEstateNews = await fetchNews('부동산 아파트 주택');
     if (realEstateNews && realEstateNews.length > 0) {
       message += `🏠 부동산 뉴스\n`;
       realEstateNews.slice(0, 2).forEach((article, i) => {
@@ -914,7 +917,7 @@ async function generateNewsBriefing() {
     }
 
     // 포토그래퍼 소식
-    const photoNews = await fetchNews('photography camera photographer');
+    const photoNews = await fetchNews('사진 카메라 촬영');
     if (photoNews && photoNews.length > 0) {
       message += `📸 포토그래퍼 소식\n`;
       photoNews.slice(0, 2).forEach((article, i) => {
@@ -941,7 +944,7 @@ async function generateDesignBriefing() {
 
   // 디자인 뉴스 (API 키가 있는 경우)
   if (NEWS_API_KEY) {
-    const designNews = await fetchNews('design UI UX Figma');
+    const designNews = await fetchNews('디자인 UI UX 피그마');
     if (designNews && designNews.length > 0) {
       message += `🎨 핫한 디자인 소식\n`;
       designNews.slice(0, 3).forEach((article, i) => {
