@@ -1,6 +1,7 @@
 const TelegramBot = require('node-telegram-bot-api');
-const YahooFinance = require('yahoo-finance2').default;
-const yahooFinance = new YahooFinance({ suppressNotices: ['yahooSurvey'] });
+const yahooFinance = require('yahoo-finance2').default;
+const cron = require('node-cron');
+const axios = require('axios');
 
 // 환경변수에서 토큰 가져오기 (Railway 배포용)
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8576664680:AAEYh0jk2rOMQE4XZVg4ISUBqMLmyeLHgZ0';
@@ -467,7 +468,7 @@ console.log('Stock Bot is running...');
 
 // /start 명령어
 bot.onText(/\/start/, (msg) => {
-  bot.sendMessage(msg.chat.id, `미국 주식 봇입니다.
+  bot.sendMessage(msg.chat.id, `🤖 대장미주봇입니다!
 
 📌 종목 분석
 종목명 입력 (예: 애플, TSLA, aapl)
@@ -486,7 +487,13 @@ bot.onText(/\/start/, (msg) => {
 
 📌 환율
 "환율" - 현재 달러/원 환율
-"1400원 알려줘" - 목표 환율 알림`);
+"1400원 알려줘" - 목표 환율 알림
+
+📰 뉴스 브리핑 (NEW!)
+"뉴스" - 오늘의 브리핑 보기
+"디자인" - 디자인 브리핑 보기
+⏰ 매일 오전 7시 자동 브리핑
+⏰ 격일 오전 7시 10분 디자인 브리핑`);
 });
 
 // 관심종목 보기 함수
@@ -746,12 +753,296 @@ ${formatNumber(volume)}주
   }
 }
 
+// ===== 뉴스 브리핑 기능 =====
+
+// 브리핑 구독자 목록 (chatId 저장)
+const briefingSubscribers = new Set();
+
+// 뉴스 API 키 (NewsAPI.org - 무료 플랜)
+const NEWS_API_KEY = process.env.NEWS_API_KEY || '';
+
+// 뉴스 가져오기 함수
+async function fetchNews(query, category = null) {
+  try {
+    if (!NEWS_API_KEY) {
+      return null;
+    }
+
+    let url = `https://newsapi.org/v2/top-headlines?country=us&pageSize=3&apiKey=${NEWS_API_KEY}`;
+    if (query) {
+      url = `https://newsapi.org/v2/everything?q=${encodeURIComponent(query)}&pageSize=3&sortBy=publishedAt&language=en&apiKey=${NEWS_API_KEY}`;
+    }
+    if (category) {
+      url = `https://newsapi.org/v2/top-headlines?country=us&category=${category}&pageSize=3&apiKey=${NEWS_API_KEY}`;
+    }
+
+    const response = await axios.get(url, { timeout: 10000 });
+    return response.data.articles || [];
+  } catch (error) {
+    return null;
+  }
+}
+
+// 한국 뉴스 가져오기 (네이버 검색 API 또는 대체)
+async function fetchKoreanNews(query) {
+  try {
+    if (!NEWS_API_KEY) return null;
+
+    const url = `https://newsapi.org/v2/everything?q=${encodeURIComponent(query)}&pageSize=3&sortBy=publishedAt&language=ko&apiKey=${NEWS_API_KEY}`;
+    const response = await axios.get(url, { timeout: 10000 });
+    return response.data.articles || [];
+  } catch (error) {
+    return null;
+  }
+}
+
+// 시세 정보 가져오기 (비트코인, 금, 주요 지수)
+async function getMarketData() {
+  try {
+    const symbols = ['BTC-USD', 'GLD', '^GSPC', '^IXIC', '^DJI', 'USDKRW=X'];
+    const quotes = await Promise.all(
+      symbols.map(async (symbol) => {
+        try {
+          return await yahooFinance.quote(symbol);
+        } catch {
+          return null;
+        }
+      })
+    );
+
+    return {
+      bitcoin: quotes[0],
+      gold: quotes[1],
+      sp500: quotes[2],
+      nasdaq: quotes[3],
+      dow: quotes[4],
+      usdkrw: quotes[5],
+    };
+  } catch (error) {
+    return null;
+  }
+}
+
+// 뉴스 브리핑 생성
+async function generateNewsBriefing() {
+  let message = `📰 오늘의 브리핑\n`;
+  message += `━━━━━━━━━━━━━━━\n`;
+  message += `${new Date().toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' })}\n\n`;
+
+  // 시장 데이터 가져오기
+  const marketData = await getMarketData();
+
+  if (marketData) {
+    // 환율
+    if (marketData.usdkrw) {
+      const rate = marketData.usdkrw.regularMarketPrice;
+      const change = marketData.usdkrw.regularMarketChangePercent || 0;
+      const arrow = change >= 0 ? '🔺' : '🔻';
+      message += `💵 환율 (USD/KRW)\n`;
+      message += `₩${formatNumber(Math.round(rate))} ${arrow}${change >= 0 ? '+' : ''}${change.toFixed(2)}%\n\n`;
+    }
+
+    // 미국 증시
+    message += `🇺🇸 미국 증시\n`;
+    if (marketData.sp500) {
+      const change = marketData.sp500.regularMarketChangePercent || 0;
+      const arrow = change >= 0 ? '🔺' : '🔻';
+      message += `S&P500: ${formatNumber(Math.round(marketData.sp500.regularMarketPrice))} ${arrow}${change >= 0 ? '+' : ''}${change.toFixed(2)}%\n`;
+    }
+    if (marketData.nasdaq) {
+      const change = marketData.nasdaq.regularMarketChangePercent || 0;
+      const arrow = change >= 0 ? '🔺' : '🔻';
+      message += `나스닥: ${formatNumber(Math.round(marketData.nasdaq.regularMarketPrice))} ${arrow}${change >= 0 ? '+' : ''}${change.toFixed(2)}%\n`;
+    }
+    if (marketData.dow) {
+      const change = marketData.dow.regularMarketChangePercent || 0;
+      const arrow = change >= 0 ? '🔺' : '🔻';
+      message += `다우: ${formatNumber(Math.round(marketData.dow.regularMarketPrice))} ${arrow}${change >= 0 ? '+' : ''}${change.toFixed(2)}%\n`;
+    }
+    message += `\n`;
+
+    // 비트코인
+    if (marketData.bitcoin) {
+      const price = marketData.bitcoin.regularMarketPrice;
+      const change = marketData.bitcoin.regularMarketChangePercent || 0;
+      const arrow = change >= 0 ? '🔺' : '🔻';
+      const rate = marketData.usdkrw?.regularMarketPrice || 1450;
+      message += `₿ 비트코인\n`;
+      message += `$${formatNumber(Math.round(price))} (₩${formatNumber(Math.round(price * rate))}) ${arrow}${change >= 0 ? '+' : ''}${change.toFixed(2)}%\n\n`;
+    }
+
+    // 금
+    if (marketData.gold) {
+      const price = marketData.gold.regularMarketPrice;
+      const change = marketData.gold.regularMarketChangePercent || 0;
+      const arrow = change >= 0 ? '🔺' : '🔻';
+      message += `🥇 금 (GLD ETF)\n`;
+      message += `$${price.toFixed(2)} ${arrow}${change >= 0 ? '+' : ''}${change.toFixed(2)}%\n\n`;
+    }
+  }
+
+  // 뉴스 섹션 (API 키가 있는 경우에만)
+  if (NEWS_API_KEY) {
+    // 주요 뉴스
+    const topNews = await fetchNews(null, 'business');
+    if (topNews && topNews.length > 0) {
+      message += `📰 주요 뉴스 Top 3\n`;
+      topNews.slice(0, 3).forEach((article, i) => {
+        message += `${i + 1}. ${article.title?.slice(0, 60) || ''}...\n`;
+      });
+      message += `\n`;
+    }
+
+    // AI/테크 소식
+    const techNews = await fetchNews('AI artificial intelligence tech');
+    if (techNews && techNews.length > 0) {
+      message += `🤖 AI/테크 소식\n`;
+      techNews.slice(0, 2).forEach((article, i) => {
+        message += `• ${article.title?.slice(0, 50) || ''}...\n`;
+      });
+      message += `\n`;
+    }
+
+    // 부동산 뉴스
+    const realEstateNews = await fetchNews('real estate housing market');
+    if (realEstateNews && realEstateNews.length > 0) {
+      message += `🏠 부동산 뉴스\n`;
+      realEstateNews.slice(0, 2).forEach((article, i) => {
+        message += `• ${article.title?.slice(0, 50) || ''}...\n`;
+      });
+      message += `\n`;
+    }
+
+    // 포토그래퍼 소식
+    const photoNews = await fetchNews('photography camera photographer');
+    if (photoNews && photoNews.length > 0) {
+      message += `📸 포토그래퍼 소식\n`;
+      photoNews.slice(0, 2).forEach((article, i) => {
+        message += `• ${article.title?.slice(0, 50) || ''}...\n`;
+      });
+      message += `\n`;
+    }
+  } else {
+    message += `💡 뉴스 기능을 사용하려면 NEWS_API_KEY 환경변수를 설정하세요.\n`;
+    message += `(https://newsapi.org 에서 무료 API 키 발급)\n\n`;
+  }
+
+  message += `━━━━━━━━━━━━━━━\n`;
+  message += `🤖 대장미주봇 자동 브리핑`;
+
+  return message;
+}
+
+// 디자인 브리핑 생성
+async function generateDesignBriefing() {
+  let message = `✨ 디자인 브리핑\n`;
+  message += `━━━━━━━━━━━━━━━\n`;
+  message += `${new Date().toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' })}\n\n`;
+
+  // 디자인 뉴스 (API 키가 있는 경우)
+  if (NEWS_API_KEY) {
+    const designNews = await fetchNews('design UI UX Figma');
+    if (designNews && designNews.length > 0) {
+      message += `🎨 핫한 디자인 소식\n`;
+      designNews.slice(0, 3).forEach((article, i) => {
+        message += `${i + 1}. ${article.title?.slice(0, 55) || ''}...\n`;
+      });
+      message += `\n`;
+    }
+  }
+
+  message += `🔗 디자인 참고 사이트\n`;
+  message += `• Dribbble: dribbble.com\n`;
+  message += `• Behance: behance.net\n`;
+  message += `• Awwwards: awwwards.com\n`;
+  message += `• Mobbin: mobbin.com\n`;
+  message += `• Godly: godly.website\n`;
+  message += `• Lapa Ninja: lapa.ninja\n\n`;
+
+  message += `💡 트렌드 키워드\n`;
+  message += `#Bento #Glassmorphism #3D #Microinteraction #DarkMode\n\n`;
+
+  message += `━━━━━━━━━━━━━━━\n`;
+  message += `🤖 대장미주봇 디자인 브리핑`;
+
+  return message;
+}
+
+// 뉴스 브리핑 보내기
+async function sendNewsBriefing(chatId) {
+  try {
+    bot.sendMessage(chatId, '⏳ 브리핑 생성 중...');
+    const briefing = await generateNewsBriefing();
+    bot.sendMessage(chatId, briefing);
+  } catch (error) {
+    bot.sendMessage(chatId, '❌ 브리핑 생성 실패');
+  }
+}
+
+// 디자인 브리핑 보내기
+async function sendDesignBriefing(chatId) {
+  try {
+    bot.sendMessage(chatId, '⏳ 디자인 브리핑 생성 중...');
+    const briefing = await generateDesignBriefing();
+    bot.sendMessage(chatId, briefing);
+  } catch (error) {
+    bot.sendMessage(chatId, '❌ 디자인 브리핑 생성 실패');
+  }
+}
+
+// 모든 구독자에게 브리핑 전송
+async function broadcastBriefing(type = 'news') {
+  const briefing = type === 'design' ? await generateDesignBriefing() : await generateNewsBriefing();
+
+  for (const chatId of briefingSubscribers) {
+    try {
+      bot.sendMessage(chatId, briefing);
+    } catch (error) {
+      // 전송 실패 시 구독자 목록에서 제거
+      briefingSubscribers.delete(chatId);
+    }
+  }
+}
+
+// 스케줄러 설정 (한국 시간 기준)
+// 매일 오전 7시 뉴스 브리핑 (UTC 22:00 = KST 07:00)
+cron.schedule('0 22 * * *', () => {
+  console.log('Sending daily news briefing...');
+  broadcastBriefing('news');
+});
+
+// 격일 오전 7시 10분 디자인 브리핑 (UTC 22:10 = KST 07:10)
+// 홀수 날짜에만 전송
+cron.schedule('10 22 * * *', () => {
+  const today = new Date().getDate();
+  if (today % 2 === 1) {
+    console.log('Sending design briefing...');
+    broadcastBriefing('design');
+  }
+});
+
+console.log('News briefing scheduler started.');
+
 // 메시지 핸들러
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const input = msg.text?.trim();
 
   if (!input || input.startsWith('/')) return;
+
+  // 브리핑 구독자 자동 등록
+  briefingSubscribers.add(chatId);
+
+  // 뉴스/디자인 브리핑 명령어 처리
+  if (/^(뉴스|뉴스브리핑|오늘뉴스|브리핑|news)$/i.test(input)) {
+    await sendNewsBriefing(chatId);
+    return;
+  }
+
+  if (/^(디자인|디자인브리핑|design)$/i.test(input)) {
+    await sendDesignBriefing(chatId);
+    return;
+  }
 
   const intent = parseIntent(input);
 
