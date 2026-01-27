@@ -4,7 +4,9 @@ const cron = require('node-cron');
 const axios = require('axios');
 
 // 환경변수에서 토큰 가져오기 (Railway 배포용)
-const TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8576664680:AAEYh0jk2rOMQE4XZVg4ISUBqMLmyeLHgZ0';
+const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
 if (!TOKEN) {
   console.error('TELEGRAM_BOT_TOKEN 환경변수가 설정되지 않았습니다.');
@@ -12,6 +14,87 @@ if (!TOKEN) {
 }
 
 const bot = new TelegramBot(TOKEN, { polling: true });
+
+// 대화 히스토리 저장 (chatId별)
+const conversationHistory = {};
+
+// AI 응답 함수 (Claude 우선, 실패시 GPT)
+async function getAIResponse(chatId, userMessage) {
+  // 대화 히스토리 초기화
+  if (!conversationHistory[chatId]) {
+    conversationHistory[chatId] = [];
+  }
+  
+  // 히스토리에 사용자 메시지 추가
+  conversationHistory[chatId].push({ role: 'user', content: userMessage });
+  
+  // 최근 10개 대화만 유지 (토큰 절약)
+  if (conversationHistory[chatId].length > 20) {
+    conversationHistory[chatId] = conversationHistory[chatId].slice(-20);
+  }
+
+  const systemPrompt = `너는 '대장미주봇'이야. 친근하고 캐주얼한 말투로 대화해.
+반말로 편하게 대화하고, 이모지도 적절히 써줘.
+주식, 투자 관련 질문에는 전문적으로 답하되 쉽게 설명해.
+사용자가 포토그래퍼이고 AI 제품사진 촬영 사업을 키우려고 한다는 걸 기억해.
+답변은 간결하게, 텔레그램 메시지에 맞게 짧게 해줘.`;
+
+  // Claude API 시도
+  if (ANTHROPIC_API_KEY) {
+    try {
+      const response = await axios.post('https://api.anthropic.com/v1/messages', {
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1024,
+        system: systemPrompt,
+        messages: conversationHistory[chatId],
+      }, {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01',
+        },
+        timeout: 30000,
+      });
+
+      const aiMessage = response.data.content[0].text;
+      conversationHistory[chatId].push({ role: 'assistant', content: aiMessage });
+      return aiMessage;
+    } catch (error) {
+      console.error('Claude API 오류:', error.response?.data || error.message);
+      // Claude 실패시 GPT로 폴백
+    }
+  }
+
+  // OpenAI API 시도
+  if (OPENAI_API_KEY) {
+    try {
+      const messages = [
+        { role: 'system', content: systemPrompt },
+        ...conversationHistory[chatId],
+      ];
+
+      const response = await axios.post('https://api.openai.com/v1/chat/completions', {
+        model: 'gpt-4o-mini',
+        messages: messages,
+        max_tokens: 1024,
+      }, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${OPENAI_API_KEY}`,
+        },
+        timeout: 30000,
+      });
+
+      const aiMessage = response.data.choices[0].message.content;
+      conversationHistory[chatId].push({ role: 'assistant', content: aiMessage });
+      return aiMessage;
+    } catch (error) {
+      console.error('OpenAI API 오류:', error.response?.data || error.message);
+    }
+  }
+
+  return null;
+}
 
 // 한글 종목명 → 티커 매핑 (미국 시가총액 상위 300개)
 const koreanToTicker = {
@@ -200,16 +283,13 @@ const koreanToTicker = {
 
 // 티커 변환 함수 (소문자 입력도 지원)
 function resolveTicker(stockName) {
-  // 1. 그대로 매핑에서 찾기 (한글명 등)
   if (koreanToTicker[stockName]) {
     return koreanToTicker[stockName];
   }
-  // 2. 대문자로 변환 후 매핑에서 찾기 (amd -> AMD -> 'AMD')
   const upper = stockName.toUpperCase();
   if (koreanToTicker[upper]) {
     return koreanToTicker[upper];
   }
-  // 3. 그냥 대문자로 반환 (직접 티커 입력)
   return upper;
 }
 
@@ -231,7 +311,6 @@ let exchangeRateCache = { rate: 1450, lastUpdated: 0 };
 // 환율 가져오기 (USD/KRW)
 async function getExchangeRate() {
   const now = Date.now();
-  // 5분 캐시
   if (now - exchangeRateCache.lastUpdated < 5 * 60 * 1000 && exchangeRateCache.rate) {
     return exchangeRateCache.rate;
   }
@@ -253,7 +332,7 @@ async function calculateRSI(ticker, period = 14) {
   try {
     const endDate = new Date();
     const startDate = new Date();
-    startDate.setDate(startDate.getDate() - (period * 3)); // 충분한 데이터 확보
+    startDate.setDate(startDate.getDate() - (period * 3));
 
     const history = await yahooFinance.chart(ticker, {
       period1: startDate,
@@ -271,13 +350,11 @@ async function calculateRSI(ticker, period = 14) {
 
     if (closes.length < period + 1) return null;
 
-    // 가격 변화 계산
     const changes = [];
     for (let i = 1; i < closes.length; i++) {
       changes.push(closes[i] - closes[i - 1]);
     }
 
-    // 최근 period 개의 변화만 사용
     const recentChanges = changes.slice(-period);
 
     let gains = 0;
@@ -327,42 +404,72 @@ function formatKRW(usd, rate) {
   return Math.round(krw).toLocaleString('ko-KR');
 }
 
+// 주식 관련 키워드인지 확인
+function isStockRelated(text) {
+  // 명확한 봇 기능 키워드
+  const botKeywords = [
+    '관심종목', '리스트', '목록', '내 종목',
+    '알림', '추가', '삭제', '빼', '제거',
+    '환율', '달러', '원달러',
+    '뉴스', '브리핑', '디자인',
+    '일정',
+  ];
+  
+  for (const keyword of botKeywords) {
+    if (text.includes(keyword)) return true;
+  }
+  
+  // 티커 패턴 (대문자 2-5글자)
+  if (/^[A-Za-z]{2,5}$/.test(text)) return true;
+  
+  // 한글 종목명
+  if (koreanToTicker[text]) return true;
+  
+  // 목표가 패턴 (테슬라 400, TSLA 500)
+  if (/^.+\s+\d+/.test(text)) return true;
+  
+  // 환율 알림 패턴 (1400원)
+  if (/^\d+원/.test(text)) return true;
+  
+  return false;
+}
+
 // 자연어 파싱 함수들
 function parseIntent(text) {
-  // 관심종목 보기: "관심종목", "리스트", "목록", "내 종목"
+  // 관심종목 보기
   if (/^(관심\s*종목|리스트|목록|내\s*종목)$/.test(text)) {
     return { type: 'showWatchlist' };
   }
 
-  // 알림 목록 보기: "알림 목록", "알림 리스트", "내 알림", "알림"
+  // 알림 목록 보기
   if (/^(알림\s*목록|알림\s*리스트|내\s*알림|설정\s*알림)$/.test(text)) {
     return { type: 'showAlerts' };
   }
 
-  // 관심종목 추가: "TSLA 추가", "테슬라 추가해줘", "애플 담아줘"
+  // 관심종목 추가
   const addMatch = text.match(/^(.+?)\s*(추가|담아|넣어|추가해줘|담아줘|넣어줘)$/);
   if (addMatch) {
     return { type: 'addWatchlist', stockName: addMatch[1].trim() };
   }
 
-  // 관심종목 삭제: "TSLA 삭제", "테슬라 빼줘", "애플 제거"
+  // 관심종목 삭제
   const delMatch = text.match(/^(.+?)\s*(삭제|빼줘|제거|빼|지워|지워줘)$/);
   if (delMatch) {
     return { type: 'delWatchlist', stockName: delMatch[1].trim() };
   }
 
-  // 알림 삭제: "1번 알림 삭제", "알림 1 삭제", "1번 삭제"
+  // 알림 삭제
   const delAlertMatch = text.match(/(?:알림\s*)?(\d+)\s*번?\s*(?:알림\s*)?(?:삭제|취소|제거)/);
   if (delAlertMatch) {
     return { type: 'delAlert', index: parseInt(delAlertMatch[1]) - 1 };
   }
 
-  // 환율 조회: "환율", "달러", "원달러"
+  // 환율 조회
   if (/^(환율|달러|원달러|달러환율|USD|usd)$/.test(text)) {
     return { type: 'showExchangeRate' };
   }
 
-  // 환율 알림: "1400원 되면 알려줘", "환율 1400 알려줘", "1350원 알림"
+  // 환율 알림
   const exchangeAlertPatterns = [
     /^(\d+\.?\d*)\s*원?\s*(?:되면|도달하면|넘으면|내려가면|떨어지면)?\s*(?:알려줘|알림|알려|노티)/,
     /^환율\s*(\d+\.?\d*)\s*(?:되면|도달하면)?\s*(?:알려줘|알림|알려)?/,
@@ -378,11 +485,11 @@ function parseIntent(text) {
     }
   }
 
-  // 목표가 알림: "테슬라 400 알려줘", "TSLA 400되면 알림", "애플 200 이상", "SOXL 30 alert"
+  // 목표가 알림
   const alertPatterns = [
     /^(.+?)\s+(\d+\.?\d*)\s*(?:되면|도달하면|넘으면|내려가면|떨어지면)?\s*(?:알려줘|알림|알려|노티|알려줘요)/,
     /^(.+?)\s+(\d+\.?\d*)\s*(?:이상|이하|도달|돌파)/,
-    /^([A-Za-z][A-Za-z0-9\-\.]*)\s+(\d+\.?\d*)\s*(?:alert|알림)?$/i,  // "SOXL 30", "soxl 30 alert"
+    /^([A-Za-z][A-Za-z0-9\-\.]*)\s+(\d+\.?\d*)\s*(?:alert|알림)?$/i,
   ];
   for (const pattern of alertPatterns) {
     const match = text.match(pattern);
@@ -395,8 +502,14 @@ function parseIntent(text) {
     }
   }
 
-  // 그 외는 주가 조회로 처리
-  return { type: 'getQuote', stockName: text };
+  // 주식 조회 (확실한 경우만)
+  const ticker = resolveTicker(text);
+  if (koreanToTicker[text] || /^[A-Za-z]{1,5}$/.test(text)) {
+    return { type: 'getQuote', stockName: text };
+  }
+
+  // 그 외는 AI 대화로 처리
+  return { type: 'aiChat' };
 }
 
 // 알림 체크 함수 (1분마다 실행)
@@ -473,10 +586,13 @@ console.log('Stock Bot is running...');
 bot.onText(/\/start/, (msg) => {
   bot.sendMessage(msg.chat.id, `🤖 대장미주봇입니다!
 
+💬 일상 대화
+그냥 아무 말이나 해보세요!
+AI가 대화 상대가 되어드립니다 😊
+
 📌 종목 분석
 종목명 입력 (예: 애플, TSLA, aapl)
 → 현재가, RSI, 52주 고저, 배당 등
-💡 모든 미국 티커 조회 가능 (NAK, SOXL 등)
 
 📌 관심종목
 "관심종목" - 목록 보기
@@ -495,14 +611,16 @@ bot.onText(/\/start/, (msg) => {
 📰 뉴스 브리핑
 "뉴스" - 오늘의 브리핑 보기
 "디자인" - 디자인 브리핑 보기
-⏰ 매일 오전 7시 자동 브리핑
 
-📅 일정 알림 (NEW!)
+📅 일정 알림
 "일정 금요일 19시 회의" - 일정 등록
-"매주 금요일 7시 회의" - 반복 일정
-"일정" - 일정 목록 보기
-"일정 1번 삭제" - 삭제
-⏰ 10분 전에 자동 알림!`);
+"일정" - 일정 목록 보기`);
+});
+
+// /clear 명령어 (대화 히스토리 초기화)
+bot.onText(/\/clear/, (msg) => {
+  conversationHistory[msg.chat.id] = [];
+  bot.sendMessage(msg.chat.id, '🗑️ 대화 기록을 초기화했어요!');
 });
 
 // 관심종목 보기 함수
@@ -678,12 +796,11 @@ function delAlert(chatId, index) {
   bot.sendMessage(chatId, `🗑️ ${removed.ticker} $${removed.targetPrice} 알림을 삭제했습니다.`);
 }
 
-// 주가 조회 함수 (종합 분석 리포트)
+// 주가 조회 함수
 async function getQuote(chatId, stockName) {
   const ticker = resolveTicker(stockName);
 
   try {
-    // 병렬로 데이터 가져오기
     const [quote, rsi, rate] = await Promise.all([
       yahooFinance.quote(ticker),
       calculateRSI(ticker),
@@ -703,23 +820,16 @@ async function getQuote(chatId, stockName) {
     const arrow = change >= 0 ? '🔺' : '🔻';
     const sign = change >= 0 ? '+' : '';
 
-    // 52주 고저
     const week52High = quote.fiftyTwoWeekHigh;
     const week52Low = quote.fiftyTwoWeekLow;
-
-    // 거래량
     const volume = quote.regularMarketVolume;
     const avgVolume = quote.averageDailyVolume3Month;
-
-    // 배당 정보
-    const dividendYield = quote.dividendYield; // 이미 % 단위
-    const dividendRate = quote.dividendRate; // 연간 배당금
+    const dividendYield = quote.dividendYield;
+    const dividendRate = quote.dividendRate;
     const dividendDate = quote.dividendDate;
 
-    // RSI 코멘트
     const rsiComment = getRSIComment(rsi);
 
-    // 메시지 구성
     let message = `📊 ${name} (${ticker})
 ━━━━━━━━━━━━━━━
 
@@ -738,7 +848,6 @@ RSI(14): ${rsi !== null ? rsi.toFixed(1) : '-'} ${rsiComment}
 ${formatNumber(volume)}주
 평균(3개월): ${formatNumber(avgVolume)}주`;
 
-    // 배당 정보 추가 (있는 경우만)
     if (dividendYield || dividendRate) {
       message += `\n\n💰 배당 정보`;
       if (dividendYield) {
@@ -764,25 +873,17 @@ ${formatNumber(volume)}주
 
 // ===== 뉴스 브리핑 기능 =====
 
-// 브리핑 구독자 목록 (chatId 저장)
 const briefingSubscribers = new Set();
+const NEWS_API_KEY = process.env.NEWS_API_KEY;
 
-// 뉴스 API 키 (NewsAPI.org - 무료 플랜)
-const NEWS_API_KEY = process.env.NEWS_API_KEY || '2477d3aed09448d08d5a131c17d14761';
-
-// 뉴스 가져오기 함수 (한국어)
 async function fetchNews(query, category = null) {
   try {
-    if (!NEWS_API_KEY) {
-      return null;
-    }
+    if (!NEWS_API_KEY) return null;
 
     let url;
     if (query) {
-      // 한국어 검색어로 뉴스 검색
       url = `https://newsapi.org/v2/everything?q=${encodeURIComponent(query)}&pageSize=3&sortBy=publishedAt&language=ko&apiKey=${NEWS_API_KEY}`;
     } else if (category) {
-      // 한국 뉴스 헤드라인
       url = `https://newsapi.org/v2/top-headlines?country=kr&category=${category}&pageSize=3&apiKey=${NEWS_API_KEY}`;
     } else {
       url = `https://newsapi.org/v2/top-headlines?country=kr&pageSize=3&apiKey=${NEWS_API_KEY}`;
@@ -795,20 +896,6 @@ async function fetchNews(query, category = null) {
   }
 }
 
-// 한국 뉴스 가져오기 (네이버 검색 API 또는 대체)
-async function fetchKoreanNews(query) {
-  try {
-    if (!NEWS_API_KEY) return null;
-
-    const url = `https://newsapi.org/v2/everything?q=${encodeURIComponent(query)}&pageSize=3&sortBy=publishedAt&language=ko&apiKey=${NEWS_API_KEY}`;
-    const response = await axios.get(url, { timeout: 10000 });
-    return response.data.articles || [];
-  } catch (error) {
-    return null;
-  }
-}
-
-// 시세 정보 가져오기 (비트코인, 금, 주요 지수)
 async function getMarketData() {
   try {
     const symbols = ['BTC-USD', 'GLD', '^GSPC', '^IXIC', '^DJI', 'USDKRW=X'];
@@ -835,17 +922,14 @@ async function getMarketData() {
   }
 }
 
-// 뉴스 브리핑 생성
 async function generateNewsBriefing() {
   let message = `📰 오늘의 브리핑\n`;
   message += `━━━━━━━━━━━━━━━\n`;
   message += `${new Date().toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' })}\n\n`;
 
-  // 시장 데이터 가져오기
   const marketData = await getMarketData();
 
   if (marketData) {
-    // 환율
     if (marketData.usdkrw) {
       const rate = marketData.usdkrw.regularMarketPrice;
       const change = marketData.usdkrw.regularMarketChangePercent || 0;
@@ -854,7 +938,6 @@ async function generateNewsBriefing() {
       message += `₩${formatNumber(Math.round(rate))} ${arrow}${change >= 0 ? '+' : ''}${change.toFixed(2)}%\n\n`;
     }
 
-    // 미국 증시
     message += `🇺🇸 미국 증시\n`;
     if (marketData.sp500) {
       const change = marketData.sp500.regularMarketChangePercent || 0;
@@ -873,7 +956,6 @@ async function generateNewsBriefing() {
     }
     message += `\n`;
 
-    // 비트코인
     if (marketData.bitcoin) {
       const price = marketData.bitcoin.regularMarketPrice;
       const change = marketData.bitcoin.regularMarketChangePercent || 0;
@@ -883,7 +965,6 @@ async function generateNewsBriefing() {
       message += `$${formatNumber(Math.round(price))} (₩${formatNumber(Math.round(price * rate))}) ${arrow}${change >= 0 ? '+' : ''}${change.toFixed(2)}%\n\n`;
     }
 
-    // 금
     if (marketData.gold) {
       const price = marketData.gold.regularMarketPrice;
       const change = marketData.gold.regularMarketChangePercent || 0;
@@ -893,9 +974,7 @@ async function generateNewsBriefing() {
     }
   }
 
-  // 뉴스 섹션 (API 키가 있는 경우에만)
   if (NEWS_API_KEY) {
-    // 주요 뉴스 (한국)
     const topNews = await fetchNews(null, 'business');
     if (topNews && topNews.length > 0) {
       message += `📰 주요 뉴스 Top 3\n`;
@@ -910,7 +989,6 @@ async function generateNewsBriefing() {
       });
     }
 
-    // AI/테크 소식
     const techNews = await fetchNews('AI 인공지능 기술');
     if (techNews && techNews.length > 0) {
       message += `🤖 AI/테크 소식\n`;
@@ -923,7 +1001,6 @@ async function generateNewsBriefing() {
       message += `\n`;
     }
 
-    // 부동산 뉴스
     const realEstateNews = await fetchNews('부동산 아파트 주택');
     if (realEstateNews && realEstateNews.length > 0) {
       message += `🏠 부동산 뉴스\n`;
@@ -936,7 +1013,6 @@ async function generateNewsBriefing() {
       message += `\n`;
     }
 
-    // 포토그래퍼 소식
     const photoNews = await fetchNews('사진 카메라 촬영');
     if (photoNews && photoNews.length > 0) {
       message += `📸 포토그래퍼 소식\n`;
@@ -948,9 +1024,6 @@ async function generateNewsBriefing() {
       });
       message += `\n`;
     }
-  } else {
-    message += `💡 뉴스 기능을 사용하려면 NEWS_API_KEY 환경변수를 설정하세요.\n`;
-    message += `(https://newsapi.org 에서 무료 API 키 발급)\n\n`;
   }
 
   message += `━━━━━━━━━━━━━━━\n`;
@@ -959,13 +1032,11 @@ async function generateNewsBriefing() {
   return message;
 }
 
-// 디자인 브리핑 생성
 async function generateDesignBriefing() {
   let message = `✨ 디자인 브리핑\n`;
   message += `━━━━━━━━━━━━━━━\n`;
   message += `${new Date().toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' })}\n\n`;
 
-  // 디자인 뉴스 (API 키가 있는 경우)
   if (NEWS_API_KEY) {
     const designNews = await fetchNews('디자인 UI UX 피그마');
     if (designNews && designNews.length > 0) {
@@ -997,7 +1068,6 @@ async function generateDesignBriefing() {
   return message;
 }
 
-// 뉴스 브리핑 보내기
 async function sendNewsBriefing(chatId) {
   try {
     bot.sendMessage(chatId, '⏳ 브리핑 생성 중...');
@@ -1008,7 +1078,6 @@ async function sendNewsBriefing(chatId) {
   }
 }
 
-// 디자인 브리핑 보내기
 async function sendDesignBriefing(chatId) {
   try {
     bot.sendMessage(chatId, '⏳ 디자인 브리핑 생성 중...');
@@ -1019,7 +1088,6 @@ async function sendDesignBriefing(chatId) {
   }
 }
 
-// 모든 구독자에게 브리핑 전송
 async function broadcastBriefing(type = 'news') {
   const briefing = type === 'design' ? await generateDesignBriefing() : await generateNewsBriefing();
 
@@ -1027,21 +1095,17 @@ async function broadcastBriefing(type = 'news') {
     try {
       bot.sendMessage(chatId, briefing);
     } catch (error) {
-      // 전송 실패 시 구독자 목록에서 제거
       briefingSubscribers.delete(chatId);
     }
   }
 }
 
-// 스케줄러 설정 (한국 시간 기준)
-// 매일 오전 7시 뉴스 브리핑 (UTC 22:00 = KST 07:00)
+// 스케줄러 설정
 cron.schedule('0 22 * * *', () => {
   console.log('Sending daily news briefing...');
   broadcastBriefing('news');
 });
 
-// 격일 오전 7시 10분 디자인 브리핑 (UTC 22:10 = KST 07:10)
-// 홀수 날짜에만 전송
 cron.schedule('10 22 * * *', () => {
   const today = new Date().getDate();
   if (today % 2 === 1) {
@@ -1054,7 +1118,6 @@ console.log('News briefing scheduler started.');
 
 // ===== 일정 알림 기능 =====
 
-// 요일 파싱
 function parseDay(text) {
   const days = {
     '일요일': 0, '일': 0,
@@ -1068,7 +1131,6 @@ function parseDay(text) {
   return days[text];
 }
 
-// 다음 해당 요일 날짜 계산
 function getNextDayDate(dayOfWeek) {
   const now = new Date();
   const today = now.getDay();
@@ -1079,11 +1141,7 @@ function getNextDayDate(dayOfWeek) {
   return nextDate;
 }
 
-// 일정 파싱 함수
 function parseSchedule(text) {
-  // 패턴들: "금요일 7시 회의", "매주 금요일 19:00 팀미팅", "내일 14시 약속"
-
-  // 반복 일정: "매주 금요일 7시 회의"
   const repeatMatch = text.match(/매주\s*(월|화|수|목|금|토|일)요?일?\s*(\d{1,2})[:시]?\s*(\d{0,2})분?\s*(.+)/);
   if (repeatMatch) {
     const dayOfWeek = parseDay(repeatMatch[1]);
@@ -1093,7 +1151,6 @@ function parseSchedule(text) {
     return { type: 'repeat', dayOfWeek, hour, minute, title };
   }
 
-  // 일회성: "금요일 7시 회의" 또는 "금요일 19:00 회의"
   const onceMatch = text.match(/(월|화|수|목|금|토|일)요?일?\s*(\d{1,2})[:시]?\s*(\d{0,2})분?\s*(.+)/);
   if (onceMatch) {
     const dayOfWeek = parseDay(onceMatch[1]);
@@ -1103,7 +1160,6 @@ function parseSchedule(text) {
     return { type: 'once', dayOfWeek, hour, minute, title };
   }
 
-  // 오늘/내일: "오늘 7시 회의", "내일 14시 약속"
   const todayMatch = text.match(/(오늘|내일)\s*(\d{1,2})[:시]?\s*(\d{0,2})분?\s*(.+)/);
   if (todayMatch) {
     const isToday = todayMatch[1] === '오늘';
@@ -1127,7 +1183,6 @@ function parseSchedule(text) {
   return null;
 }
 
-// 일정 추가 함수
 function addSchedule(chatId, scheduleData) {
   if (!schedules[chatId]) schedules[chatId] = [];
 
@@ -1141,7 +1196,6 @@ function addSchedule(chatId, scheduleData) {
     nextAlarm = getNextDayDate(scheduleData.dayOfWeek);
     nextAlarm.setHours(scheduleData.hour, scheduleData.minute, 0, 0);
 
-    // 이미 지난 시간이면 다음 주로
     if (nextAlarm <= now) {
       nextAlarm.setDate(nextAlarm.getDate() + 7);
     }
@@ -1162,7 +1216,6 @@ function addSchedule(chatId, scheduleData) {
   return schedule;
 }
 
-// 일정 목록 보기
 function showSchedules(chatId) {
   if (!schedules[chatId] || schedules[chatId].length === 0) {
     return '📅 등록된 일정이 없습니다.\n\n"일정 금요일 19시 회의" 형식으로 추가하세요.';
@@ -1187,7 +1240,6 @@ function showSchedules(chatId) {
   return result;
 }
 
-// 일정 삭제
 function deleteSchedule(chatId, index) {
   if (!schedules[chatId] || !schedules[chatId][index]) {
     return '❌ 해당 일정을 찾을 수 없습니다.';
@@ -1197,7 +1249,6 @@ function deleteSchedule(chatId, index) {
   return `🗑️ "${removed.title}" 일정을 삭제했습니다.`;
 }
 
-// 일정 알림 체크 (매분 실행)
 function checkScheduleAlerts() {
   const now = new Date();
   const nowTime = now.getTime();
@@ -1210,7 +1261,6 @@ function checkScheduleAlerts() {
       const schedule = userSchedules[i];
       const alarmTime = schedule.nextAlarm;
 
-      // 10분 전 알림 (9분~10분 전 사이에 알림)
       const tenMinBefore = alarmTime - 10 * 60 * 1000;
       const nineMinBefore = alarmTime - 9 * 60 * 1000;
 
@@ -1222,16 +1272,13 @@ function checkScheduleAlerts() {
         schedule.notified = true;
       }
 
-      // 일정 시간이 지났으면
       if (nowTime >= alarmTime) {
         if (schedule.repeat) {
-          // 반복 일정: 다음 주로 업데이트
           const nextAlarm = new Date(schedule.nextAlarm);
           nextAlarm.setDate(nextAlarm.getDate() + 7);
           schedule.nextAlarm = nextAlarm.getTime();
           schedule.notified = false;
         } else {
-          // 일회성 일정: 삭제
           userSchedules.splice(i, 1);
         }
       }
@@ -1239,7 +1286,6 @@ function checkScheduleAlerts() {
   }
 }
 
-// 매분 일정 체크
 setInterval(checkScheduleAlerts, 60000);
 
 console.log('Schedule reminder started.');
@@ -1254,7 +1300,7 @@ bot.on('message', async (msg) => {
   // 브리핑 구독자 자동 등록
   briefingSubscribers.add(chatId);
 
-  // 뉴스/디자인 브리핑 명령어 처리
+  // 뉴스/디자인 브리핑
   if (/^(뉴스|뉴스브리핑|오늘뉴스|브리핑|news)$/i.test(input)) {
     await sendNewsBriefing(chatId);
     return;
@@ -1265,14 +1311,12 @@ bot.on('message', async (msg) => {
     return;
   }
 
-  // 일정 관련 명령어 처리
-  // 일정 목록 보기
+  // 일정 관련
   if (/^(일정|일정\s*목록|일정\s*리스트|내\s*일정)$/.test(input)) {
     bot.sendMessage(chatId, showSchedules(chatId));
     return;
   }
 
-  // 일정 삭제: "일정 1번 삭제"
   const scheduleDelMatch = input.match(/일정\s*(\d+)\s*번?\s*(삭제|취소|제거)/);
   if (scheduleDelMatch) {
     const index = parseInt(scheduleDelMatch[1]) - 1;
@@ -1280,7 +1324,6 @@ bot.on('message', async (msg) => {
     return;
   }
 
-  // 일정 추가: "일정 금요일 7시 회의" 또는 "금요일 7시 회의 알려줘"
   const scheduleAddMatch = input.match(/^일정\s+(.+)/) || input.match(/(.+)\s+알려줘$/);
   if (scheduleAddMatch) {
     const scheduleText = scheduleAddMatch[1].replace(/알려줘$/, '').trim();
@@ -1304,6 +1347,7 @@ bot.on('message', async (msg) => {
     }
   }
 
+  // 기존 봇 기능 처리
   const intent = parseIntent(input);
 
   switch (intent.type) {
@@ -1333,6 +1377,15 @@ bot.on('message', async (msg) => {
       break;
     case 'getQuote':
       await getQuote(chatId, intent.stockName);
+      break;
+    case 'aiChat':
+      // AI 대화 처리
+      const aiResponse = await getAIResponse(chatId, input);
+      if (aiResponse) {
+        bot.sendMessage(chatId, aiResponse);
+      } else {
+        bot.sendMessage(chatId, '🤖 AI 응답을 가져올 수 없습니다. 잠시 후 다시 시도해주세요.');
+      }
       break;
   }
 });
