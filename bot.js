@@ -1,5 +1,13 @@
 const TelegramBot = require('node-telegram-bot-api');
 const yahooFinance = require('yahoo-finance2').default;
+
+// yahoo-finance2 설정 (쿠키/크럼 인증 우회 및 타임아웃)
+yahooFinance.setGlobalConfig({
+  queue: {
+    timeout: 10000  // 10초 타임아웃
+  }
+});
+yahooFinance.suppressNotices(['yahooSurvey', 'ripHistorical']);
 const cron = require('node-cron');
 const axios = require('axios');
 const Redis = require('ioredis');
